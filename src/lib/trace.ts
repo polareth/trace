@@ -1,15 +1,14 @@
 import { Abi, AbiFunction, Address, CallResult, ContractFunctionName, Hex } from "tevm";
+import { SolcStorageLayout } from "tevm/bundler/solc";
 import { toFunctionSignature } from "viem";
 
 import { debug } from "@/debug";
-import { createAccountDiff, intrinsicDiff, intrinsicSnapshot, storageDiff, storageSnapshot } from "@/lib/access-list";
-import { StorageLayoutAdapter } from "@/lib/adapter";
+import { intrinsicDiff, intrinsicSnapshot, storageDiff, storageSnapshot } from "@/lib/access-list";
+import { cleanTrace, decode } from "@/lib/slots/decode";
 import { extractPotentialKeys } from "@/lib/slots/engine";
-import { formatLabeledStorageOp, getContracts, getStorageLayoutAdapter } from "@/lib/storage-layout";
+import { getContracts, getStorageLayout } from "@/lib/storage-layout";
 import {
   LabeledStorageAccess,
-  LabeledStorageRead,
-  LabeledStorageWrite,
   StorageAccessTrace,
   TraceStorageAccessOptions,
   TraceStorageAccessTxParams,
@@ -111,23 +110,22 @@ export const traceStorageAccess = async <
   const storagePostTx = await storageSnapshot(client, callResult.accessList ?? {});
   const intrinsicsPostTx = await intrinsicSnapshot(client, addresses);
 
-  // Get contracts' storage layouts
-  const filteredContracts = addresses.filter((address) => {
-    const preTxStorage = storagePreTx[address];
-    const postTxStorage = storagePostTx[address];
-    return preTxStorage && postTxStorage;
+  // Retrieve information about the contracts for which we need the storage layout
+  const contractsInfo = await getContracts({
+    client,
+    addresses: addresses.filter((address) => storagePreTx[address] && storagePostTx[address]),
+    explorers: args.explorers,
   });
 
-  const contractsInfo = await getContracts({ client, addresses: filteredContracts, explorers: args.explorers });
-
   // Map to store storage layouts adapter per contract
-  const layoutAdapters: Record<Address, StorageLayoutAdapter> = {};
+  const layouts: Record<Address, SolcStorageLayout> = {};
 
   // Get layout adapters for each contract
   await Promise.all(
     Object.entries(contractsInfo).map(async ([address, contract]) => {
       // Get storage layout adapter for this contract
-      layoutAdapters[address as Address] = await getStorageLayoutAdapter({ ...contract, address: address as Address });
+      const layout = await getStorageLayout({ ...contract, address: address as Address });
+      if (layout) layouts[address as Address] = layout;
     }),
   );
   // Extract potential key/index values from the execution trace
@@ -172,79 +170,59 @@ export const traceStorageAccess = async <
       }
 
       // For EOAs (accounts without code) we won't have storage data
-      const slotsDiff =
-        storage.pre && storage.post ? storageDiff(storage.pre, storage.post) : { reads: {}, writes: {} };
+      const storageTrace = storage.pre && storage.post ? storageDiff(storage.pre, storage.post) : {};
 
-      // Compare account state changes
-      const accountDiff = intrinsicDiff(intrinsics.pre, intrinsics.post);
+      const layout = layouts[address];
+      if (!layout) {
+        acc[address] = {
+          storage: Object.fromEntries(
+            Object.entries(storageTrace).map(([slot, { current, next }]) => [
+              slot,
+              cleanTrace({
+                label: `slot_${slot}`,
+                trace: {
+                  current,
+                  modified: next !== undefined && next !== current,
+                  next,
+                  slots: [slot],
+                },
+              }),
+            ]),
+          ),
+          intrinsic: intrinsicDiff(intrinsics.pre, intrinsics.post),
+        };
 
-      // Combine into complete diff
-      const trace = createAccountDiff(slotsDiff, accountDiff);
+        return acc;
+      }
 
-      // Grab the adapter for this contract
-      const layoutAdapter = layoutAdapters[address];
+      // 1. Decode using all known variables
+      const { unexploredSlots, decoded } = decode(storageTrace, layout.storage, layout.types, potentialKeys);
 
-      // TODO: Redesign
-      // Current design:
-      // Go through each read, and for each go through all known variables to try to decode
-      // Same for writes
-      // If we can't decode, return a generic variable name
-      // New design:
-      // let exploredSlots: Set<Hex> = new Set();
-      // // variable name -> decoded (+ maybe add slots that contain data?)
-      // const decodedAccess: Record<string, LabeledStorageAccess> = Object.fromEntries(
-      //   Object.entries(layoutAdapter).map(([label, storageAdapter]) => {
-      //     // Use a way to explore slots specific to each variable type
-      //     // Explore all slots because there might be packed variables (unexplored will just be to signify that we couldn't label it at all)
-      //     // Pass the slot values as well
-      //     // When decoding, find out if the slot(s) changed before/after tx to not decode twice if not necessary
+      // 2. Create unknown variables access traces for remaining slots
+      const unknownAccess: Record<string, LabeledStorageAccess> = Object.fromEntries(
+        [...unexploredSlots].map((slot) => {
+          const current = storageTrace[slot].current;
+          const next = storageTrace[slot].next;
 
-      //     // 1. It's a mapping (try all keys to try to compute slots; we could get multiple slots if the mapping was modified multiple times)
-      //     // 3. It's an array (decode the highest length of the array—before and after tx—and try to compute slots—could be multiple— with all possible indexes)
-      //     // 2. It's a struct (compute slots for each member from the base slot, find out if one was affected, if it's the case decode members we can decode entirely)
-      //     // 4. It's a bytes/string (decode the highest length of the variable—before and after tx—and decode it—might need to extract out 0 bytes?)
-      //     // 5. It's a "primitive" (decode using the type directly and using the extracting relevant bytes if there is an offset)
-
-      //     // TODO: implement
-
-      //     return [label, {}];
-      //   }),
-      // );
-
-      // const unknownAccess: Record<string, LabeledStorageAccess> = {}; // generic variable name -> undecoded slot value(s)
-
-      // Create labeled reads and writes
-      const labeledReads = Object.entries(trace.reads).reduce(
-        (acc, [slotHex, read]) => {
-          acc[slotHex as Hex] = formatLabeledStorageOp({
-            op: read,
-            slot: slotHex as Hex,
-            adapter: layoutAdapter,
-            potentialKeys,
-          });
-          return acc;
-        },
-        {} as Record<Hex, [LabeledStorageRead, ...LabeledStorageRead[]]>,
-      );
-
-      const labeledWrites = Object.entries(trace.writes).reduce(
-        (acc, [slotHex, write]) => {
-          acc[slotHex as Hex] = formatLabeledStorageOp({
-            op: write,
-            slot: slotHex as Hex,
-            adapter: layoutAdapter,
-            potentialKeys,
-          });
-          return acc;
-        },
-        {} as Record<Hex, [LabeledStorageWrite, ...LabeledStorageWrite[]]>,
+          return [
+            `slot_${slot}`,
+            cleanTrace({
+              label: `slot_${slot}`,
+              trace: {
+                current,
+                modified: next !== undefined && next !== current,
+                next,
+                slots: [slot],
+              },
+            }),
+          ];
+        }),
       );
 
       // Return enhanced trace with labels
       acc[address] = {
-        reads: labeledReads,
-        writes: labeledWrites,
-        intrinsic: trace.intrinsic,
+        storage: { ...decoded, ...unknownAccess },
+        intrinsic: intrinsicDiff(intrinsics.pre, intrinsics.post),
       };
 
       return acc;

@@ -11,18 +11,7 @@ import { randomBytes } from "tevm/utils";
 import { autoload, loaders } from "@shazow/whatsabi";
 
 import { debug } from "@/debug";
-import { createStorageLayoutAdapter, StorageLayoutAdapter } from "@/lib/adapter";
-import { findLayoutInfoAtSlot } from "@/lib/slots/engine";
-import {
-  GetContractsOptions,
-  GetContractsResult,
-  LabeledStorageRead,
-  LabeledStorageWrite,
-  MappingKey,
-  StorageReads,
-  StorageWrites,
-} from "@/lib/types";
-import { decodeHex } from "@/lib/utils";
+import { GetContractsOptions, GetContractsResult } from "@/lib/types";
 
 const ignoredSourcePaths = ["metadata.json", "creator-tx-hash.txt", "immutable-references"];
 
@@ -82,7 +71,7 @@ export const getContracts = async ({
  *
  * @returns A comprehensive storage layout adapter with methods for accessing storage data & utils
  */
-export const getStorageLayoutAdapter = async ({
+export const getStorageLayout = async ({
   address,
   metadata,
   sources,
@@ -92,7 +81,7 @@ export const getStorageLayoutAdapter = async ({
   // Return empty layout if we're missing critical information
   if (!compilerVersion || !evmVersion || !sources || sources.length === 0) {
     debug(`Missing compiler info for ${address}. Cannot generate storage layout.`);
-    return {};
+    return undefined;
   }
 
   try {
@@ -130,80 +119,13 @@ export const getStorageLayoutAdapter = async ({
     );
 
     // Return a storage layout adapter for advanced access patterns
-    return createStorageLayoutAdapter(
-      {
-        storage: aggregatedStorage,
-        types: aggregatedTypes,
-      },
-      undefined,
-    ); // no need to inject a client here as we don't want to access storage
+    return {
+      storage: aggregatedStorage,
+      types: aggregatedTypes,
+    };
   } catch (error) {
     debug(`Error generating storage layout for ${address}:`, error);
-    return {};
-  }
-};
-
-type FormatLabeledStorageOpOptions<T extends StorageReads[Hex] | StorageWrites[Hex]> = {
-  op: T;
-  slot: Hex;
-  adapter: StorageLayoutAdapter;
-  potentialKeys: Array<MappingKey>;
-};
-
-type FormatLabeledStorageOpResult<T extends StorageReads[Hex] | StorageWrites[Hex]> = T extends StorageWrites[Hex]
-  ? [LabeledStorageWrite, ...LabeledStorageWrite[]]
-  : T extends StorageReads[Hex]
-    ? [LabeledStorageRead, ...LabeledStorageRead[]]
-    : never;
-
-export const formatLabeledStorageOp = <T extends StorageReads[Hex] | StorageWrites[Hex]>({
-  op,
-  slot,
-  adapter,
-  potentialKeys,
-}: FormatLabeledStorageOpOptions<T>): FormatLabeledStorageOpResult<T> => {
-  const { current: currentHex } = op;
-
-  // Find all labels for this slot using our slot engine
-  const slotInfo = findLayoutInfoAtSlot(slot, adapter, potentialKeys);
-
-  if (slotInfo.length > 0) {
-    // Found matches - return an array of labeled reads for this slot
-    return slotInfo.map((info) => {
-      // Decode the value based on its type and offset (if applicable)
-      const current = decodeHex(currentHex, info.type, info.offset);
-
-      const result: LabeledStorageRead | LabeledStorageWrite = {
-        label: info.label,
-        type: info.type,
-        current,
-      };
-
-      if ("next" in op) (result as LabeledStorageWrite).next = decodeHex(op.next, info.type, info.offset);
-
-      if (info.offset) result.offset = info.offset;
-      if (info.index !== undefined) result.index = decodeHex(info.index, "uint256").decoded;
-      if (info.keys && info.keys.length > 0)
-        result.keys = info.keys.map((key) => (key.decoded ? key : { ...decodeHex(key.hex, key.type), type: key.type }));
-
-      return result;
-    }) as FormatLabeledStorageOpResult<T>;
-  } else {
-    // No match found, use a fallback label
-    return ("next" in op
-      ? [
-          {
-            label: `var_${slot.slice(0, 10)}`,
-            current: { hex: currentHex },
-            next: { hex: op.next },
-          },
-        ]
-      : [
-          {
-            label: `var_${slot.slice(0, 10)}`,
-            current: { hex: currentHex },
-          },
-        ]) as unknown as FormatLabeledStorageOpResult<T>;
+    return undefined;
   }
 };
 

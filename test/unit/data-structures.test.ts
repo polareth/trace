@@ -2,8 +2,8 @@ import { Address, encodeFunctionData, getAddress, toHex } from "tevm";
 import { padHex } from "viem";
 import { describe, expect, it } from "vitest";
 
-import { ACCOUNTS, CONTRACTS } from "@test/constants";
-import { getClient, getMappingSlotHex, getSlotHex } from "@test/utils";
+import { ACCOUNTS, CONTRACTS, LAYOUTS } from "@test/constants";
+import { expectedStorage, getClient, getMappingSlotHex, getSlotAtOffsetHex, getSlotHex } from "@test/utils";
 import { traceStorageAccess } from "@/index";
 
 const { Arrays, Mappings } = CONTRACTS;
@@ -41,18 +41,24 @@ describe("Data Structures Storage Access", () => {
       });
 
       // Verify the write operation was captured
-      expect(writeTrace[Mappings.address].reads).toEqual({});
-      expect(writeTrace[Mappings.address].writes).toEqual({
-        [getMappingSlotHex(0, user)]: [
-          {
+      expect(writeTrace[Mappings.address].storage).toEqual(
+        expectedStorage(LAYOUTS.Mappings, {
+          balances: {
             label: "balances",
-            type: "uint256",
-            current: { hex: "0x00", decoded: 0n },
-            next: { hex: toHex(amount, { size: 32 }), decoded: amount },
-            keys: [{ hex: padHex(user, { size: 32 }), decoded: user, type: "address" }],
+            type: "mapping(address => uint256)",
+            kind: "mapping",
+            trace: [
+              {
+                current: 0n,
+                next: amount,
+                modified: true,
+                keys: [{ type: "address", value: user }],
+                slots: [getMappingSlotHex(0, user)],
+              },
+            ],
           },
-        ],
-      });
+        }),
+      );
 
       // Read the value and check if the same slot is accessed
       const readTrace = await traceStorageAccess({
@@ -64,17 +70,23 @@ describe("Data Structures Storage Access", () => {
         args: [user],
       });
 
-      expect(readTrace[Mappings.address].writes).toEqual({});
-      expect(readTrace[Mappings.address].reads).toEqual({
-        [getMappingSlotHex(0, user)]: [
-          {
+      expect(readTrace[Mappings.address].storage).toEqual(
+        expectedStorage(LAYOUTS.Mappings, {
+          balances: {
             label: "balances",
-            type: "uint256",
-            current: { hex: toHex(amount, { size: 32 }), decoded: amount },
-            keys: [{ hex: padHex(user, { size: 32 }), decoded: user, type: "address" }],
+            type: "mapping(address => uint256)",
+            kind: "mapping",
+            trace: [
+              {
+                current: amount,
+                modified: false,
+                keys: [{ type: "address", value: user }],
+                slots: [getMappingSlotHex(0, user)],
+              },
+            ],
           },
-        ],
-      });
+        }),
+      );
     });
 
     it("should trace nested mapping slot access", async () => {
@@ -94,21 +106,27 @@ describe("Data Structures Storage Access", () => {
       });
 
       // Verify the write operation
-      expect(trace[Mappings.address].reads).toEqual({});
-      expect(trace[Mappings.address].writes).toEqual({
-        [getMappingSlotHex(1, owner, spender)]: [
-          {
+      expect(trace[Mappings.address].storage).toEqual(
+        expectedStorage(LAYOUTS.Mappings, {
+          allowances: {
             label: "allowances",
-            type: "uint256",
-            current: { hex: "0x00", decoded: 0n },
-            next: { hex: toHex(amount, { size: 32 }), decoded: amount },
-            keys: [
-              { hex: padHex(owner, { size: 32 }), decoded: owner, type: "address" },
-              { hex: padHex(spender, { size: 32 }), decoded: spender, type: "address" },
+            type: "mapping(address => mapping(address => uint256))",
+            kind: "mapping",
+            trace: [
+              {
+                current: 0n,
+                next: amount,
+                modified: true,
+                keys: [
+                  { type: "address", value: owner },
+                  { type: "address", value: spender },
+                ],
+                slots: [getMappingSlotHex(1, owner, spender)],
+              },
             ],
           },
-        ],
-      });
+        }),
+      );
     });
 
     it("... even with a ridiculously nested mapping", async () => {
@@ -128,26 +146,32 @@ describe("Data Structures Storage Access", () => {
         args: [a, b, c, d, value],
       });
 
-      expect(trace[Mappings.address].reads).toEqual({});
-      expect(trace[Mappings.address].writes).toEqual({
-        [getMappingSlotHex(2, a, b, c, d)]: [
-          {
+      expect(trace[Mappings.address].storage).toEqual(
+        expectedStorage(LAYOUTS.Mappings, {
+          ridiculouslyNestedMapping: {
             label: "ridiculouslyNestedMapping",
-            type: "uint256",
-            current: { hex: "0x00", decoded: 0n },
-            next: { hex: toHex(value, { size: 32 }), decoded: value },
-            keys: [
-              { hex: padHex(a, { size: 32 }), decoded: getAddress(a), type: "address" },
-              { hex: padHex(b, { size: 32 }), decoded: getAddress(b), type: "address" },
-              { hex: padHex(c, { size: 32 }), decoded: getAddress(c), type: "address" },
-              { hex: padHex(d, { size: 32 }), decoded: getAddress(d), type: "address" },
+            type: "mapping(address => mapping(address => mapping(address => mapping(address => uint256))))",
+            kind: "mapping",
+            trace: [
+              {
+                current: 0n,
+                next: value,
+                modified: true,
+                keys: [
+                  { type: "address", value: getAddress(a) },
+                  { type: "address", value: getAddress(b) },
+                  { type: "address", value: getAddress(c) },
+                  { type: "address", value: getAddress(d) },
+                ],
+                slots: [getMappingSlotHex(2, a, b, c, d)],
+              },
             ],
           },
-        ],
-      });
+        }),
+      );
     });
 
-    it.skip("should trace mapping with struct values slot access", async () => {
+    it("should trace mapping with struct values slot access", async () => {
       const client = getClient();
       const user = recipient.toString();
       const balance = 2000n;
@@ -164,15 +188,41 @@ describe("Data Structures Storage Access", () => {
         args: [user, balance, lastUpdate, isActive],
       });
 
-      // Verify no reads and multiple writes (one for each struct field)
-      expect(trace[Mappings.address].reads).toEqual({});
-      console.log(trace[Mappings.address].writes);
-      console.log(
-        JSON.stringify(trace[Mappings.address].writes, (_, v) => (typeof v === "bigint" ? v.toString() : v), 2),
+      const userMappingSlot = getMappingSlotHex(3, user);
+      expect(trace[Mappings.address].storage).toEqual(
+        expectedStorage(LAYOUTS.Mappings, {
+          userInfo: {
+            label: "userInfo",
+            type: "mapping(address => struct Mappings.UserInfo)",
+            kind: "mapping",
+            trace: [
+              {
+                current: {
+                  balance: 0n,
+                  isActive: false,
+                  lastUpdate: 0n,
+                },
+                next: {
+                  balance: 2000n,
+                  isActive: true,
+                  lastUpdate: 123456n,
+                },
+                modified: true,
+                keys: [{ type: "address", value: user }],
+                slots: [
+                  // UserInfo takes 3 slots
+                  userMappingSlot,
+                  getSlotAtOffsetHex(userMappingSlot, 1),
+                  getSlotAtOffsetHex(userMappingSlot, 2),
+                ],
+              },
+            ],
+          },
+        }),
       );
     });
 
-    it.todo("should trace complex mapping operations with multiple keys", async () => {
+    it("should trace complex mapping operations with multiple keys", async () => {
       const client = getClient();
       const user = recipient.toString();
 
@@ -181,7 +231,9 @@ describe("Data Structures Storage Access", () => {
         client,
         from: caller.toString(),
         to: Mappings.address,
-        data: encodeFunctionData(Mappings.write.setUserInfo(user, 100n, 100n, true)),
+        abi: Mappings.abi,
+        functionName: "setUserInfo",
+        args: [user, 100n, 100n, true],
       });
 
       // Now update just the balance field
@@ -190,39 +242,39 @@ describe("Data Structures Storage Access", () => {
         client,
         from: caller.toString(),
         to: Mappings.address,
-        data: encodeFunctionData(Mappings.write.updateUserBalance(user, newBalance)),
+        abi: Mappings.abi,
+        functionName: "updateUserBalance",
+        args: [user, newBalance],
       });
 
       // We should see writes to both balance and lastUpdate fields, but not isActive
-      expect(trace[Mappings.address].reads).toEqual({});
-      expect(Object.keys(trace[Mappings.address].writes).length).toBe(2);
-
-      const slots = Object.keys(trace[Mappings.address].writes);
-
-      // Check the balance field update
-      const balanceSlot = slots[0];
-      expect(trace[Mappings.address].writes[balanceSlot][0]).toEqual({
-        label: "userInfo[0x0000000000000000000000000000000000000002].balance",
-        current: 100n,
-        next: newBalance,
-        type: "uint256",
-        keys: [recipient.toString()],
-        keySources: [expect.anything()],
-      });
-
-      // Check the lastUpdate field update
-      const lastUpdateSlot = slots[1];
-      expect(trace[Mappings.address].writes[lastUpdateSlot][0]).toEqual({
-        label: "userInfo[0x0000000000000000000000000000000000000002].lastUpdate",
-        current: 100n,
-        next: expect.any(BigInt), // Block timestamp, which will be greater than 100
-        type: "uint256",
-        keys: [recipient.toString()],
-        keySources: [expect.anything()],
-      });
-
-      // The isActive field should not be updated
-      expect(slots.length).toBe(2);
+      const userMappingSlot = getMappingSlotHex(3, user);
+      expect(trace[Mappings.address].storage).toEqual(
+        expectedStorage(LAYOUTS.Mappings, {
+          userInfo: {
+            label: "userInfo",
+            type: "mapping(address => struct Mappings.UserInfo)",
+            kind: "mapping",
+            trace: [
+              {
+                current: {
+                  balance: 100n,
+                  lastUpdate: 100n,
+                },
+                next: {
+                  balance: newBalance,
+                  lastUpdate: expect.any(BigInt), // we don't know the exact value
+                },
+                modified: true,
+                keys: [{ type: "address", value: user }],
+                slots: [userMappingSlot, getSlotAtOffsetHex(userMappingSlot, 1)],
+              },
+            ],
+          },
+        }),
+      );
+      // @ts-expect-error 0 can't be used to access the trace
+      expect(trace[Mappings.address].storage.userInfo.trace[0].next.lastUpdate).toBeGreaterThan(100n);
     });
   });
 
@@ -469,4 +521,6 @@ describe("Data Structures Storage Access", () => {
       });
     });
   });
+
+  describe.todo("Structs", () => {});
 });

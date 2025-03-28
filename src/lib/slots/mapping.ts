@@ -1,8 +1,11 @@
 import { Hex, keccak256 } from "tevm";
+import { SolcStorageLayoutItem, SolcStorageLayoutMappingType, SolcStorageLayoutTypes } from "tevm/bundler/solc";
+import { AbiType } from "abitype";
 
 import { StorageAdapter, StorageLayoutAdapter } from "@/lib/adapter";
-import { AbiType } from "@/lib/adapter/schema";
 import { MappingKey, SlotLabelResult } from "@/lib/types";
+
+import { ExtractMappingValueType, GetMappingKeyTypes } from "../adapter/types";
 
 // Maximum nesting depth to prevent excessive computation
 const NESTED_MAPPINGS_LIMIT = 4;
@@ -24,30 +27,28 @@ export const computeMappingSlot = (baseSlot: Hex, key: Hex): Hex =>
   keccak256(`0x${key.replace("0x", "")}${baseSlot.replace("0x", "")}`);
 
 /**
- * Finds a matching mapping key combination that produces the target storage slot. Works with both simple mappings and
- * nested mappings. Uses a straightforward and reliable approach focused on direct slot computation.
+ * Finds all matching mapping key combinations that produce the target storage slots. Works with both simple mappings
+ * and nested mappings. Uses a straightforward and reliable approach focused on direct slot computation.
  *
  * @param variableName The name of the mapping variable
  * @param targetSlot The storage slot we're trying to match
  * @param mapping The mapping adapter containing type information
  * @param potentialKeys Array of potential keys from transaction data
- * @param adapter The storage layout adapter
- * @returns The SlotLabelResult if a match is found, undefined otherwise
+ * @returns Array of SlotLabelResult for all matches found, empty array if none found
  */
-export const findMappingMatch = (
-  variableName: string,
-  targetSlot: Hex,
-  mapping: StorageAdapter<`mapping(${string} => ${string})`>,
-  potentialKeys: MappingKey[],
-  adapter: StorageLayoutAdapter,
-): SlotLabelResult | undefined => {
-  // Parse mapping type to understand its structure
-  const keyTypes = mapping.keys;
-  const valueType = mapping.value;
-  const baseSlot = mapping.getSlot();
+export const findMappingMatch = <T extends string, Types extends SolcStorageLayoutTypes>(
+  mapping: { baseSlot: Hex; keyTypes: GetMappingKeyTypes<T, Types>; valueType: ExtractMappingValueType<T> },
+  typeInfo: SolcStorageLayoutMappingType,
+  targetSlots: Set<Hex>,
+  potentialKeys: Array<MappingKey>,
+): Array<{ slot: Hex; keys: Array<MappingKey> }> => {
+  const { baseSlot, keyTypes, valueType } = mapping;
+  // Early termination if we have no keys or slots to try
+  if (potentialKeys.length === 0 || targetSlots.size === 0) return [];
 
-  // Early termination if we have no keys to try
-  if (potentialKeys.length === 0) return undefined;
+  const matches: Array<{ slot: Hex; keys: Array<MappingKey> }> = [];
+  // Track which slots we've already matched to avoid duplicates
+  const matchedSlots = new Set<Hex>();
 
   // Filter potential keys by their types
   // Address keys are very common in mappings, prioritize them first
@@ -72,14 +73,12 @@ export const findMappingMatch = (
       // Single level mapping
       for (const key of addressKeys) {
         const computedSlot = computeMappingSlot(baseSlot, key.hex);
-        if (computedSlot === targetSlot) {
-          return {
-            label: variableName,
-            slot: targetSlot,
-            matchType: "mapping",
-            type: valueType as AbiType,
+        if (targetSlots.has(computedSlot) && !matchedSlots.has(computedSlot)) {
+          matches.push({
+            slot: computedSlot,
             keys: [key],
-          };
+          });
+          matchedSlots.add(computedSlot);
         }
       }
     } else {
@@ -91,20 +90,9 @@ export const findMappingMatch = (
         current: MappingKey[],
         level: number,
         currentSlot: Hex,
-      ): SlotLabelResult | undefined => {
-        // Check if we found a match at this level
-        if (currentSlot === targetSlot && level === keyTypes.length) {
-          return {
-            label: variableName,
-            slot: targetSlot,
-            matchType: "nested-mapping",
-            type: valueType as AbiType,
-            keys: [...current],
-          };
-        }
-
+      ): void => {
         // If we've used up all levels, stop
-        if (level >= keyTypes.length) return undefined;
+        if (level >= keyTypes.length) return;
 
         // Try each unused key at this level
         for (let i = 0; i < keys.length; i++) {
@@ -117,33 +105,27 @@ export const findMappingMatch = (
           // Compute the next slot
           const nextSlot = computeMappingSlot(currentSlot, keys[i].hex);
 
-          // Check if this gives us the target
-          if (nextSlot === targetSlot && level === keyTypes.length - 1) {
-            return {
-              label: variableName,
-              slot: targetSlot,
-              matchType: "nested-mapping",
-              type: valueType as AbiType,
+          // Check if this gives us the target at the final level
+          if (level === keyTypes.length - 1 && targetSlots.has(nextSlot) && !matchedSlots.has(nextSlot)) {
+            matches.push({
+              slot: nextSlot,
               keys: [...current],
-            };
+            });
+            matchedSlots.add(nextSlot);
           }
 
           // Recurse to the next level
-          const result = generatePermutations(keys, used, current, level + 1, nextSlot);
-          if (result) return result;
+          generatePermutations(keys, used, current, level + 1, nextSlot);
 
           // Backtrack
           current.pop();
           used[i] = false;
         }
-
-        return undefined;
       };
 
       // Start with no keys used
       const used = Array(addressKeys.length).fill(false);
-      const result = generatePermutations(addressKeys, used, [], 0, baseSlot);
-      if (result) return result;
+      generatePermutations(addressKeys, used, [], 0, baseSlot);
     }
   }
 
@@ -166,17 +148,14 @@ export const findMappingMatch = (
     for (const key of sortedKeys) {
       const computedSlot = computeMappingSlot(baseSlot, key.hex);
 
-      if (computedSlot === targetSlot) {
-        return {
-          label: variableName,
-          slot: targetSlot,
-          matchType: "mapping",
-          type: valueType as AbiType,
+      if (targetSlots.has(computedSlot) && !matchedSlots.has(computedSlot)) {
+        matches.push({
+          slot: computedSlot,
           keys: [key],
-        };
+        });
+        matchedSlots.add(computedSlot);
       }
     }
-    return undefined;
   }
 
   // For nested mappings with multiple key types
@@ -236,14 +215,12 @@ export const findMappingMatch = (
       const nextSlot = computeMappingSlot(slot, key.hex);
 
       // Check for direct match
-      if (nextSlot === targetSlot) {
-        return {
-          label: variableName,
-          slot: targetSlot,
-          matchType: "nested-mapping",
-          type: valueType as AbiType,
+      if (targetSlots.has(nextSlot) && !matchedSlots.has(nextSlot)) {
+        matches.push({
+          slot: nextSlot,
           keys: [...keys, key],
-        };
+        });
+        matchedSlots.add(nextSlot);
       }
 
       // Continue searching if not at max depth
@@ -257,5 +234,5 @@ export const findMappingMatch = (
     }
   }
 
-  return undefined;
+  return matches;
 };

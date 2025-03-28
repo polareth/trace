@@ -1,8 +1,8 @@
 import { encodeFunctionData } from "tevm";
 import { describe, expect, it } from "vitest";
 
-import { ACCOUNTS, CONTRACTS } from "@test/constants";
-import { getClient, getSlotHex } from "@test/utils";
+import { ACCOUNTS, CONTRACTS, LAYOUTS } from "@test/constants";
+import { expectedStorage, getClient, getSlotHex } from "@test/utils";
 import { Tracer, traceStorageAccess } from "@/index";
 
 const { StoragePacking } = CONTRACTS;
@@ -23,6 +23,7 @@ const { caller } = ACCOUNTS;
  * 8. Large numeric values handling
  * 9. Tracer class
  */
+
 // TODO: with replay on both traceStorageAccess and Tracer
 describe("Basic slots access and packing", () => {
   describe("traceStorageAccess with contract call", () => {
@@ -39,45 +40,42 @@ describe("Basic slots access and packing", () => {
         args: [42, 123, true, caller.toString()],
       });
 
-      // Check the read and write operations
-      expect(trace[StoragePacking.address].reads).toEqual({});
-      expect(trace[StoragePacking.address].writes).toEqual({
-        [getSlotHex(0)]: [
-          {
+      expect(trace[StoragePacking.address].storage).toEqual(
+        expectedStorage(LAYOUTS.StoragePacking, {
+          smallValue1: {
             label: "smallValue1",
             type: "uint8",
-            current: { hex: "0x00", decoded: 0 },
-            next: { hex: "0x2a", decoded: 42 },
+            kind: "primitive",
+            trace: { current: 0, next: 42, modified: true, slots: [getSlotHex(0)] },
           },
-          {
+          smallValue2: {
             label: "smallValue2",
             type: "uint8",
-            current: { hex: "0x00", decoded: 0 },
-            next: { hex: "0x7b", decoded: 123 },
+            kind: "primitive",
+            trace: { current: 0, next: 123, modified: true, slots: [getSlotHex(0)] },
             offset: 1,
           },
-          {
+          flag: {
             label: "flag",
             type: "bool",
-            current: { hex: "0x00", decoded: false },
-            next: { hex: "0x01", decoded: true },
+            kind: "primitive",
+            trace: { current: false, next: true, modified: true, slots: [getSlotHex(0)] },
             offset: 2,
           },
-          {
+          someAddress: {
             label: "someAddress",
             type: "address",
-            current: {
-              hex: "0x00",
-              decoded: "0x0000000000000000000000000000000000000000",
-            },
-            next: {
-              hex: "0x0000000000000000000000000000000000000001",
-              decoded: "0x0000000000000000000000000000000000000001",
+            kind: "primitive",
+            trace: {
+              current: "0x0000000000000000000000000000000000000000",
+              next: caller.toString(),
+              modified: true,
+              slots: [getSlotHex(0)],
             },
             offset: 3,
           },
-        ],
-      });
+        }),
+      );
     });
 
     it("should handle individual updates to packed variables", async () => {
@@ -93,32 +91,31 @@ describe("Basic slots access and packing", () => {
         args: [999],
       });
 
-      expect(trace[StoragePacking.address].reads).toEqual({});
-      expect(trace[StoragePacking.address].writes).toEqual({
-        // Slot for medium values (3rd variable group but 2nd group takes 2 slots)
-        [getSlotHex(3)]: [
-          {
+      expect(trace[StoragePacking.address].storage).toEqual(
+        expectedStorage(LAYOUTS.StoragePacking, {
+          // Slot for medium values (3rd variable group but 2nd group takes 2 slots)
+          mediumValue1: {
             label: "mediumValue1",
             type: "uint16",
-            current: { hex: "0x00", decoded: 0 },
-            next: { hex: "0x03e7", decoded: 999 },
+            kind: "primitive",
+            trace: { current: 0, next: 999, modified: true, slots: [getSlotHex(3)] },
           },
-          {
+          mediumValue2: {
             label: "mediumValue2",
             type: "uint32",
-            current: { hex: "0x00", decoded: 0 },
-            next: { hex: "0x00000000", decoded: 0 }, // gets populated with 0 bytes when writing first variable
+            kind: "primitive",
+            trace: { current: 0, modified: false, slots: [getSlotHex(3)] },
             offset: 2,
           },
-          {
+          mediumValue3: {
             label: "mediumValue3",
             type: "uint64",
-            current: { hex: "0x00", decoded: 0n },
-            next: { hex: "0x0000000000000000", decoded: 0n }, // same here
+            kind: "primitive",
+            trace: { current: 0n, modified: false, slots: [getSlotHex(3)] },
             offset: 6,
           },
-        ],
-      });
+        }),
+      );
     });
 
     it("should track updates across multiple slots including packed and non-packed", async () => {
@@ -134,78 +131,71 @@ describe("Basic slots access and packing", () => {
         args: [10, 20, 1000, 2000, 12345n],
       });
 
-      expect(trace[StoragePacking.address].reads).toEqual({});
-      // We expect at least 3 slots to be written to:
+      // We expect at least 3 slots to be accessed:
       // - Slot 0: smallValue1, smallValue2, (packed) (flag & someAddress are not modified)
-      // - Slot 3: mediumValue1, mediumValue2 (packed)
+      // - Slot 3: mediumValue1, mediumValue2, mediumValue3 (packed) (mediumValue3 is not modified)
       // - Slot 1: largeValue1 (not packed) (written last)
-      expect(trace[StoragePacking.address].writes).toEqual({
-        [getSlotHex(0)]: [
-          {
+      expect(trace[StoragePacking.address].storage).toEqual(
+        expectedStorage(LAYOUTS.StoragePacking, {
+          smallValue1: {
             label: "smallValue1",
             type: "uint8",
-            current: { hex: "0x00", decoded: 0 },
-            next: { hex: "0x0a", decoded: 10 },
+            kind: "primitive",
+            trace: { current: 0, next: 10, modified: true, slots: [getSlotHex(0)] },
           },
-          {
+          smallValue2: {
             label: "smallValue2",
             type: "uint8",
-            current: { hex: "0x00", decoded: 0 },
-            next: { hex: "0x14", decoded: 20 },
+            kind: "primitive",
+            trace: { current: 0, next: 20, modified: true, slots: [getSlotHex(0)] },
             offset: 1,
           },
-          {
+          flag: {
             label: "flag",
             type: "bool",
-            current: { hex: "0x00", decoded: false },
-            next: { hex: "0x00", decoded: false },
+            kind: "primitive",
+            trace: { current: false, modified: false, slots: [getSlotHex(0)] },
             offset: 2,
           },
-          {
+          someAddress: {
             label: "someAddress",
             type: "address",
-            current: {
-              hex: "0x00",
-              decoded: "0x0000000000000000000000000000000000000000",
-            },
-            next: {
-              hex: "0x0000000000000000000000000000000000000000",
-              decoded: "0x0000000000000000000000000000000000000000",
+            kind: "primitive",
+            trace: {
+              current: "0x0000000000000000000000000000000000000000",
+              modified: false,
+              slots: [getSlotHex(0)],
             },
             offset: 3,
           },
-        ],
-        [getSlotHex(3)]: [
-          {
+          mediumValue1: {
             label: "mediumValue1",
             type: "uint16",
-            current: { hex: "0x00", decoded: 0 },
-            next: { hex: "0x03e8", decoded: 1000 },
+            kind: "primitive",
+            trace: { current: 0, next: 1000, modified: true, slots: [getSlotHex(3)] },
           },
-          {
+          mediumValue2: {
             label: "mediumValue2",
             type: "uint32",
-            current: { hex: "0x00", decoded: 0 },
-            next: { hex: "0x000007d0", decoded: 2000 },
+            kind: "primitive",
+            trace: { current: 0, next: 2000, modified: true, slots: [getSlotHex(3)] },
             offset: 2,
           },
-          {
+          mediumValue3: {
             label: "mediumValue3",
             type: "uint64",
-            current: { hex: "0x00", decoded: 0n },
-            next: { hex: "0x0000000000000000", decoded: 0n },
+            kind: "primitive",
+            trace: { current: 0n, modified: false, slots: [getSlotHex(3)] },
             offset: 6,
           },
-        ],
-        [getSlotHex(1)]: [
-          {
+          largeValue1: {
             label: "largeValue1",
             type: "uint256",
-            current: { hex: "0x00", decoded: 0n },
-            next: { hex: "0x0000000000000000000000000000000000000000000000000000000000003039", decoded: 12345n },
+            kind: "primitive",
+            trace: { current: 0n, next: 12345n, modified: true, slots: [getSlotHex(1)] },
           },
-        ],
-      });
+        }),
+      );
     });
 
     it("should handle large numeric values correctly", async () => {
@@ -222,20 +212,16 @@ describe("Basic slots access and packing", () => {
       });
 
       // Verify that the large value was set correctly
-      expect(trace[StoragePacking.address].reads).toEqual({});
-      expect(trace[StoragePacking.address].writes).toEqual({
-        [getSlotHex(1)]: [
-          {
+      expect(trace[StoragePacking.address].storage).toEqual(
+        expectedStorage(LAYOUTS.StoragePacking, {
+          largeValue1: {
             label: "largeValue1",
             type: "uint256",
-            current: { hex: "0x00", decoded: 0n },
-            next: {
-              hex: "0x00000000000000000000000000000000000000018ee90ff6c373e0ee4e3f0ad2",
-              decoded: 123456789012345678901234567890n,
-            },
+            kind: "primitive",
+            trace: { current: 0n, next: 123456789012345678901234567890n, modified: true, slots: [getSlotHex(1)] },
           },
-        ],
-      });
+        }),
+      );
     });
 
     it("should handle bytes32 data correctly", async () => {
@@ -254,17 +240,21 @@ describe("Basic slots access and packing", () => {
       });
 
       // Verify that the data was set correctly
-      expect(trace[StoragePacking.address].reads).toEqual({});
-      expect(trace[StoragePacking.address].writes).toEqual({
-        [getSlotHex(2)]: [
-          {
+      expect(trace[StoragePacking.address].storage).toEqual(
+        expectedStorage(LAYOUTS.StoragePacking, {
+          data: {
             label: "data",
             type: "bytes32",
-            current: { hex: "0x00", decoded: "0x0000000000000000000000000000000000000000000000000000000000000000" },
-            next: { hex: testBytes32, decoded: testBytes32 },
+            kind: "primitive",
+            trace: {
+              current: "0x0000000000000000000000000000000000000000000000000000000000000000",
+              next: testBytes32,
+              modified: true,
+              slots: [getSlotHex(2)],
+            },
           },
-        ],
-      });
+        }),
+      );
     });
 
     it("should capture storage reads when getting values", async () => {
@@ -280,11 +270,17 @@ describe("Basic slots access and packing", () => {
         args: [],
       });
 
-      // Verify that we have a read operation but no write operations
-      expect(trace[StoragePacking.address].writes).toEqual({});
-      expect(trace[StoragePacking.address].reads).toEqual({
-        [getSlotHex(1)]: [{ label: "largeValue1", type: "uint256", current: { hex: "0x00", decoded: 0n } }],
-      });
+      // Verify that we have a read operation with no modifications
+      expect(trace[StoragePacking.address].storage).toEqual(
+        expectedStorage(LAYOUTS.StoragePacking, {
+          largeValue1: {
+            label: "largeValue1",
+            type: "uint256",
+            kind: "primitive",
+            trace: { current: 0n, modified: false, slots: [getSlotHex(1)] },
+          },
+        }),
+      );
     });
 
     it("should detect account state changes (nonce, balance)", async () => {
@@ -303,8 +299,7 @@ describe("Basic slots access and packing", () => {
       const callerTrace = trace[caller.toString()];
 
       // No reads & writes as it's an EOA
-      expect(callerTrace.reads).toEqual({});
-      expect(callerTrace.writes).toEqual({});
+      expect(callerTrace.storage).toEqual({});
 
       // Nonce should be incremented
       expect(Number(callerTrace.intrinsic.nonce.next)).toBe(Number(callerTrace.intrinsic.nonce.current) + 1);
@@ -328,44 +323,42 @@ describe("Basic slots access and packing", () => {
       });
 
       // Check the read and write operations
-      expect(trace[StoragePacking.address].reads).toEqual({});
-      expect(trace[StoragePacking.address].writes).toEqual({
-        [getSlotHex(0)]: [
-          {
+      expect(trace[StoragePacking.address].storage).toEqual(
+        expectedStorage(LAYOUTS.StoragePacking, {
+          smallValue1: {
             label: "smallValue1",
             type: "uint8",
-            current: { hex: "0x00", decoded: 0 },
-            next: { hex: "0x01", decoded: 1 },
+            kind: "primitive",
+            trace: { current: 0, next: 1, modified: true, slots: [getSlotHex(0)] },
           },
-          {
+          smallValue2: {
             label: "smallValue2",
             type: "uint8",
-            current: { hex: "0x00", decoded: 0 },
-            next: { hex: "0x02", decoded: 2 },
+            kind: "primitive",
+            trace: { current: 0, next: 2, modified: true, slots: [getSlotHex(0)] },
             offset: 1,
           },
-          {
+          flag: {
             label: "flag",
             type: "bool",
-            current: { hex: "0x00", decoded: false },
-            next: { hex: "0x01", decoded: true },
+            kind: "primitive",
+            trace: { current: false, next: true, modified: true, slots: [getSlotHex(0)] },
             offset: 2,
           },
-          {
+          someAddress: {
             label: "someAddress",
             type: "address",
-            current: {
-              hex: "0x00",
-              decoded: "0x0000000000000000000000000000000000000000",
-            },
-            next: {
-              hex: "0x0000000000000000000000000000000000000001",
-              decoded: "0x0000000000000000000000000000000000000001",
+            kind: "primitive",
+            trace: {
+              current: "0x0000000000000000000000000000000000000000",
+              next: caller.toString(),
+              modified: true,
+              slots: [getSlotHex(0)],
             },
             offset: 3,
           },
-        ],
-      });
+        }),
+      );
     });
   });
 
@@ -381,44 +374,42 @@ describe("Basic slots access and packing", () => {
         data: encodeFunctionData(StoragePacking.write.setSmallValues(1, 2, true, caller.toString())),
       });
 
-      expect(trace[StoragePacking.address].reads).toEqual({});
-      expect(trace[StoragePacking.address].writes).toEqual({
-        [getSlotHex(0)]: [
-          {
+      expect(trace[StoragePacking.address].storage).toEqual(
+        expectedStorage(LAYOUTS.StoragePacking, {
+          smallValue1: {
             label: "smallValue1",
             type: "uint8",
-            current: { hex: "0x00", decoded: 0 },
-            next: { hex: "0x01", decoded: 1 },
+            kind: "primitive",
+            trace: { current: 0, next: 1, modified: true, slots: [getSlotHex(0)] },
           },
-          {
+          smallValue2: {
             label: "smallValue2",
             type: "uint8",
-            current: { hex: "0x00", decoded: 0 },
-            next: { hex: "0x02", decoded: 2 },
+            kind: "primitive",
+            trace: { current: 0, next: 2, modified: true, slots: [getSlotHex(0)] },
             offset: 1,
           },
-          {
+          flag: {
             label: "flag",
             type: "bool",
-            current: { hex: "0x00", decoded: false },
-            next: { hex: "0x01", decoded: true },
+            kind: "primitive",
+            trace: { current: false, next: true, modified: true, slots: [getSlotHex(0)] },
             offset: 2,
           },
-          {
+          someAddress: {
             label: "someAddress",
             type: "address",
-            current: {
-              hex: "0x00",
-              decoded: "0x0000000000000000000000000000000000000000",
-            },
-            next: {
-              hex: "0x0000000000000000000000000000000000000001",
-              decoded: "0x0000000000000000000000000000000000000001",
+            kind: "primitive",
+            trace: {
+              current: "0x0000000000000000000000000000000000000000",
+              next: caller.toString(),
+              modified: true,
+              slots: [getSlotHex(0)],
             },
             offset: 3,
           },
-        ],
-      });
+        }),
+      );
     });
   });
 });

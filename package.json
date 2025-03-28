@@ -5,6 +5,7 @@
   "main": "index.js",
   "type": "module",
   "scripts": {
+    "generate:layouts": "tsx test/generate.ts",
     "test": "DEBUG=trace dotenvx run -f .env.test --quiet -- vitest run",
     "test:unit": "DEBUG=trace dotenvx run -f .env.test --quiet -- vitest run test/unit",
     "test:staging": "DEBUG=trace TEST_ENV=staging dotenvx run -f .env.test --quiet -- vitest run test/staging.test"
@@ -14,6 +15,7 @@
   "license": "MIT",
   "dependencies": {
     "@shazow/whatsabi": "^0.21.0",
+    "abitype": "^1.0.8",
     "debug": "^4.4.0",
     "tevm": "1.0.0-next.138",
     "viem": "^2.21.1"
@@ -27,6 +29,7 @@
     "@types/debug": "^4.1.12",
     "prettier": "^3.5.3",
     "prettier-plugin-jsdoc": "^1.3.2",
+    "tsx": "^3.14.0",
     "typescript": "^5.8.2",
     "vite-tsconfig-paths": "^5.1.4",
     "vitest": "^3.0.9"

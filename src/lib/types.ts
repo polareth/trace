@@ -1,12 +1,11 @@
 import { Abi, Address, ContractFunctionName, GetAccountResult, Hex, MemoryClient } from "tevm";
-import { SolcStorageLayoutTypes } from "tevm/bundler/solc";
+import { SolcStorageLayout, SolcStorageLayoutTypes } from "tevm/bundler/solc";
 import { Common } from "tevm/common";
 import { abi } from "@shazow/whatsabi";
+import { AbiType, AbiTypeToPrimitiveType } from "abitype";
 import { AbiStateMutability, ContractFunctionArgs } from "viem";
 
-import { AbiType, AbiTypeToPrimitiveType } from "@/lib/adapter/schema";
-
-import { GetMappingKeyTypes, SolidityTypeToTsType } from "./adapter/types";
+import { DeepReadonly, GetMappingKeysTuple, ParseSolidityType, SolidityTypeToTsType } from "@/lib/adapter/types";
 
 /* -------------------------------------------------------------------------- */
 /*                                    TRACE                                   */
@@ -121,72 +120,87 @@ export type TraceStorageAccessTxWithReplay = { txHash: Hex };
 /**
  * Storage access trace for a transaction
  *
- * @template EOA - Whether the account is an EOA (Externally Owned Account)
- * @param reads - Storage slots that were read but not modified during transaction (only applicable for contracts)
- * @param writes - Storage slots that were modified during transaction (only applicable for contracts)
+ * @param storage - Storage slots that were accessed during transaction (only applicable for contracts)
  * @param intrinsic - Account field changes during transaction
  */
-export type StorageAccessTrace<EOA extends boolean = false> = {
-  reads: EOA extends false ? { [slot: Hex]: [LabeledStorageRead, ...LabeledStorageRead[]] } : never;
-  writes: EOA extends false ? { [slot: Hex]: [LabeledStorageWrite, ...LabeledStorageWrite[]] } : never;
+export type StorageAccessTrace<T extends DeepReadonly<SolcStorageLayout> = SolcStorageLayout> = {
+  storage: {
+    [Variable in T["storage"][number] as Variable["label"]]: LabeledStorageAccess<
+      Variable["label"],
+      ParseSolidityType<Variable["type"], T["types"]>,
+      T["types"]
+    >;
+  };
   intrinsic: IntrinsicsDiff;
 };
 
-/**
- * Labeled storage read with decoded value and type
- *
- * @param current - The current storage value in hex and decoded form (if available)
- * @param type - The ABI type of the storage value
- * @param label - The label retrieved from the storage layout
- * @param keys - Any mapping keys if the value is mapped
- * @param index - The index of the entry if it's inside an array
- * @param offset - The offset of this variable within the slot (for packed variables)
- */
-export type LabeledStorageRead<T extends AbiType = AbiType> = {
-  label?: string;
-  type?: T;
-  current: {
-    hex: Hex;
-    decoded?: AbiTypeToPrimitiveType<T>;
-  };
-  keys?: Array<MappingKey>;
-  index?: bigint;
-  offset?: number; // Offset in bytes for packed variables
-};
-
-/**
- * Labeled storage write with decoded value and type
- *
- * @param next - The new storage value in hex and decoded form (if available)
- * @see {@link LabeledStorageRead} for other properties
- */
-export type LabeledStorageWrite<T extends AbiType = AbiType> = LabeledStorageRead<T> & {
-  next: {
-    hex: Hex;
-    decoded?: AbiTypeToPrimitiveType<T>;
-  };
-};
-
 export type LabeledStorageAccess<
-  T extends string = string,
   L extends string = string,
+  T extends string | undefined = string | undefined,
   Types extends SolcStorageLayoutTypes = SolcStorageLayoutTypes,
 > = {
   /** The name of the variable in the layout */
   label: L;
-  /** The type of the variable */
-  type: T;
-  /** The decoded value of the variable */
-  current: SolidityTypeToTsType<T, Types, Hex>;
-  /** The next value after the transaction (if it was modified) */
-  next?: SolidityTypeToTsType<T, Types, Hex>;
-  /** The slots storing some of the variable's data that were accessed */
-  slots: Array<Hex>;
-  /** The keys that were used to access the variable (if it's a mapping) */
-  keys?: T extends `mapping(${string} => ${string})` ? GetMappingKeyTypes<T, Types> : never;
-  /** The indexes that were used to access the variable (if it's an array) */
-  indexes?: T extends `${string}[]` | `${string}[${string}]` ? number[] : never;
+  /** The entire Solidity definition of the variable (e.g. "mapping(uint256 => mapping(address => bool))" or "uint256[]") */
+  type?: T; // TODO: rename to definition (also everywhere we call it "T", e.g. TDef & definition/typeDef)
+  /** The more global kind of variable for easier parsing of the trace (e.g. "mapping", "array", "struct", "primitive") */
+  kind?: T extends `mapping(${string} => ${string})`
+    ? "mapping"
+    : T extends `${string}[]` | `${string}[${string}]`
+      ? "array"
+      : T extends `struct ${string}`
+        ? "struct"
+        : T extends "bytes" | "string"
+          ? "bytes"
+          : T extends `${string}`
+            ? "primitive"
+            : T extends undefined
+              ? undefined
+              : never;
+  /** The trace of the variable's access */
+  trace: LabeledStorageAccessTrace<T, Types>;
+  /** The offset of the variable within the slot (for packed variables) */
+  offset?: number;
 };
+
+export type LabeledStorageAccessTrace<
+  T extends string | undefined = string | undefined,
+  Types extends SolcStorageLayoutTypes = SolcStorageLayoutTypes,
+> = T extends `mapping(${string} => ${string})`
+  ? Array<_LabeledStorageAccessTrace<T, Types> & { keys: GetMappingKeysTuple<T, Types> }>
+  : T extends `${string}[]` | `${string}[${string}]`
+    ? Array<_LabeledStorageAccessTrace<T, Types> & { index: number }>
+    : _LabeledStorageAccessTrace<T, Types>;
+
+type _LabeledStorageAccessTrace<T extends string | undefined, Types extends SolcStorageLayoutTypes> =
+  | {
+      modified: false;
+      /** The decoded value of the variable */
+      current: T extends `struct ${string}`
+        ? Partial<SolidityTypeToTsType<T, Types>>
+        : T extends string
+          ? SolidityTypeToTsType<T, Types>
+          : Hex;
+      /** The slots storing some of the variable's data that were accessed */
+      slots: Array<Hex>;
+    }
+  | {
+      modified: true;
+      /** The decoded value of the variable */
+      current: T extends `struct ${string}`
+        ? Partial<SolidityTypeToTsType<T, Types>>
+        : T extends string
+          ? SolidityTypeToTsType<T, Types>
+          : Hex;
+      /** The next value after the transaction (if it was modified) */
+      next: T extends `struct ${string}`
+        ? Partial<SolidityTypeToTsType<T, Types>>
+        : T extends string
+          ? SolidityTypeToTsType<T, Types>
+          : Hex;
+      /** The slots storing some of the variable's data that were accessed */
+      slots: Array<Hex>;
+    };
 
 /* -------------------------------------------------------------------------- */
 /*                                 ACCESS LIST                                */
@@ -205,23 +219,14 @@ export type StorageSnapshot = {
   };
 };
 
-/** Type representing a list of storage reads without modification. */
-export type StorageReads = {
+/** Type representing a list of storage writes with modification. */
+export type StorageDiff = {
   /** Storage slot location */
   [slot: Hex]: {
     /** Current storage value */
     current: Hex;
-  };
-};
-
-/** Type representing a list of storage writes with modification. */
-export type StorageWrites = {
-  /** Storage slot location */
-  [slot: Hex]: {
-    /** Current storage value before transaction */
-    current: Hex;
     /** New storage value after transaction */
-    next: Hex;
+    next?: Hex;
   };
 };
 
@@ -251,33 +256,6 @@ export type IntrinsicsDiff = {
     /** Value after transaction (undefined if not modified) */
     next?: Intrinsics[K];
   };
-};
-
-/* -------------------------- AGGREGATED STATE TYPES -------------------------- */
-/**
- * Complete snapshot of an account's storage and account state at a point in time.
- *
- * This can represent either a contract or an EOA.
- */
-export type AccountSnapshot<EOA extends boolean = false> = {
-  /** Storage slots state (only applicable for contracts) */
-  storage: EOA extends false ? StorageSnapshot : never;
-  /** Account fields state */
-  intrinsic: IntrinsicsSnapshot;
-};
-
-/**
- * Complete difference between pre-transaction and post-transaction states for an address.
- *
- * This can represent either a contract or an EOA (Externally Owned Account).
- */
-export type AccountDiff<EOA extends boolean = false> = {
-  /** Storage slots that were read but not modified during transaction (only applicable for contracts) */
-  reads: EOA extends false ? StorageReads : never;
-  /** Storage slots that were modified during transaction (only applicable for contracts) */
-  writes: EOA extends false ? StorageWrites : never;
-  /** Account field changes during transaction */
-  intrinsic: IntrinsicsDiff;
 };
 
 /* -------------------------------------------------------------------------- */

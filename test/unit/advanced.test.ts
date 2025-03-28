@@ -1,8 +1,8 @@
 import { padHex } from "viem";
 import { describe, expect, it } from "vitest";
 
-import { ACCOUNTS, CONTRACTS } from "@test/constants";
-import { getClient, getMappingSlotHex, getSlotHex } from "@test/utils";
+import { ACCOUNTS, CONTRACTS, LAYOUTS } from "@test/constants";
+import { expectedStorage, getClient, getMappingSlotHex, getSlotHex } from "@test/utils";
 import { traceStorageAccess } from "@/index";
 
 const { AssemblyStorage } = CONTRACTS;
@@ -44,29 +44,28 @@ describe("Assembly-based storage access", () => {
       });
 
       // Verify the write operation was captured
-      expect(writeTrace[AssemblyStorage.address].reads).toEqual({});
-      expect(writeTrace[AssemblyStorage.address].writes).toEqual({
-        [getSlotHex(0)]: [
-          {
+      expect(writeTrace[AssemblyStorage.address].storage).toEqual(
+        expectedStorage(LAYOUTS.AssemblyStorage, {
+          value: {
             label: "value",
             type: "uint256",
-            current: { hex: "0x00", decoded: 0n },
-            next: { hex: "0x000000000000000000000000000000000000000000000000000000000000007b", decoded: 123n },
+            kind: "primitive",
+            trace: { current: 0n, next: 123n, modified: true, slots: [getSlotHex(0)] },
           },
-        ],
-      });
+        }),
+      );
 
       // Verify the read operation was captured
-      expect(readTrace[AssemblyStorage.address].writes).toEqual({});
-      expect(readTrace[AssemblyStorage.address].reads).toEqual({
-        [getSlotHex(0)]: [
-          {
+      expect(readTrace[AssemblyStorage.address].storage).toEqual(
+        expectedStorage(LAYOUTS.AssemblyStorage, {
+          value: {
             label: "value",
             type: "uint256",
-            current: { hex: "0x000000000000000000000000000000000000000000000000000000000000007b", decoded: 123n },
+            kind: "primitive",
+            trace: { current: 123n, modified: false, slots: [getSlotHex(0)] },
           },
-        ],
-      });
+        }),
+      );
     });
 
     it("should capture complex assembly storage access in mappings", async () => {
@@ -92,31 +91,43 @@ describe("Assembly-based storage access", () => {
       });
 
       // Verify the write operation was captured
-      expect(writeTrace[AssemblyStorage.address].reads).toEqual({});
-      expect(writeTrace[AssemblyStorage.address].writes).toEqual({
-        [getMappingSlotHex(1, recipient.toString())]: [
-          {
+      expect(writeTrace[AssemblyStorage.address].storage).toEqual(
+        expectedStorage(LAYOUTS.AssemblyStorage, {
+          balances: {
             label: "balances",
-            type: "uint256",
-            current: { hex: "0x00", decoded: 0n },
-            next: { hex: "0x00000000000000000000000000000000000000000000000000000000000003e8", decoded: 1000n },
-            keys: [{ hex: padHex(recipient.toString(), { size: 32 }), decoded: recipient.toString(), type: "address" }],
+            type: "mapping(address => uint256)",
+            kind: "mapping",
+            trace: [
+              {
+                current: 0n,
+                next: 1000n,
+                modified: true,
+                keys: [{ type: "address", value: recipient.toString() }],
+                slots: [getMappingSlotHex(1, recipient.toString())],
+              },
+            ],
           },
-        ],
-      });
+        }),
+      );
 
       // Verify the read operation was captured
-      expect(readTrace[AssemblyStorage.address].writes).toEqual({});
-      expect(readTrace[AssemblyStorage.address].reads).toEqual({
-        [getMappingSlotHex(1, recipient.toString())]: [
-          {
+      expect(readTrace[AssemblyStorage.address].storage).toEqual(
+        expectedStorage(LAYOUTS.AssemblyStorage, {
+          balances: {
             label: "balances",
-            type: "uint256",
-            current: { hex: "0x00000000000000000000000000000000000000000000000000000000000003e8", decoded: 1000n },
-            keys: [{ hex: padHex(recipient.toString(), { size: 32 }), decoded: recipient.toString(), type: "address" }],
+            type: "mapping(address => uint256)",
+            kind: "mapping",
+            trace: [
+              {
+                current: 1000n,
+                modified: false,
+                keys: [{ type: "address", value: recipient.toString() }],
+                slots: [getMappingSlotHex(1, recipient.toString())],
+              },
+            ],
           },
-        ],
-      });
+        }),
+      );
     });
 
     it("should track batch assembly operations across multiple slots", async () => {
@@ -132,65 +143,37 @@ describe("Assembly-based storage access", () => {
         args: [789n, [caller.toString(), recipient.toString()], [111n, 222n]],
       });
 
-      expect(trace[AssemblyStorage.address].reads).toEqual({});
-      expect(trace[AssemblyStorage.address].writes).toEqual({
-        [getSlotHex(0)]: [
-          {
+      expect(trace[AssemblyStorage.address].storage).toEqual(
+        expectedStorage(LAYOUTS.AssemblyStorage, {
+          value: {
             label: "value",
             type: "uint256",
-            current: {
-              hex: "0x00",
-              decoded: 0n,
-            },
-            next: {
-              hex: "0x0000000000000000000000000000000000000000000000000000000000000315",
-              decoded: 789n,
-            },
+            kind: "primitive",
+            trace: { current: 0n, next: 789n, modified: true, slots: [getSlotHex(0)] },
           },
-        ],
-        [getMappingSlotHex(1, caller.toString())]: [
-          {
+          balances: {
             label: "balances",
-            type: "uint256",
-            current: {
-              hex: "0x00",
-              decoded: 0n,
-            },
-            next: {
-              hex: "0x000000000000000000000000000000000000000000000000000000000000006f",
-              decoded: 111n,
-            },
-            keys: [
+            type: "mapping(address => uint256)",
+            kind: "mapping",
+            trace: [
               {
-                hex: padHex(caller.toString(), { size: 32 }),
-                decoded: caller.toString(),
-                type: "address",
+                current: 0n,
+                next: 111n,
+                modified: true,
+                keys: [{ type: "address", value: caller.toString() }],
+                slots: [getMappingSlotHex(1, caller.toString())],
+              },
+              {
+                current: 0n,
+                next: 222n,
+                modified: true,
+                keys: [{ type: "address", value: recipient.toString() }],
+                slots: [getMappingSlotHex(1, recipient.toString())],
               },
             ],
           },
-        ],
-        [getMappingSlotHex(1, recipient.toString())]: [
-          {
-            label: "balances",
-            type: "uint256",
-            current: {
-              hex: "0x00",
-              decoded: 0n,
-            },
-            next: {
-              hex: "0x00000000000000000000000000000000000000000000000000000000000000de",
-              decoded: 222n,
-            },
-            keys: [
-              {
-                hex: padHex(recipient.toString(), { size: 32 }),
-                decoded: recipient.toString(),
-                type: "address",
-              },
-            ],
-          },
-        ],
-      });
+        }),
+      );
     });
   });
 });

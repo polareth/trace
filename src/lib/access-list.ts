@@ -1,15 +1,7 @@
 import { Address, Hex, MemoryClient } from "tevm";
 
 import { debug } from "@/debug";
-import {
-  AccessList,
-  AccountDiff,
-  IntrinsicsDiff,
-  IntrinsicsSnapshot,
-  StorageReads,
-  StorageSnapshot,
-  StorageWrites,
-} from "@/lib/types";
+import { AccessList, IntrinsicsDiff, IntrinsicsSnapshot, StorageDiff, StorageSnapshot } from "@/lib/types";
 
 /**
  * Fetches storage values for all slots in an access list.
@@ -39,42 +31,24 @@ export const storageSnapshot = async (
 };
 
 /**
- * Analyzes storage by comparing pre and post transaction states to identify reads and writes.
+ * Analyzes storage by comparing pre and post transaction states to identify accesses.
  *
  * @param preTx - Storage values before transaction execution
  * @param postTx - Storage values after transaction execution
- * @returns Detailed analysis of storage reads and writes
+ * @returns Unified storage accesses with writes having both current and next fields, and reads having just a current
+ *   field
  */
-export const storageDiff = (preTx: StorageSnapshot, postTx: StorageSnapshot): Omit<AccountDiff, "intrinsic"> => {
-  const writesArray = Object.entries(postTx)
-    .map(([slot, { value: next }]) => {
-      const preSlot = preTx[slot as Hex];
-      if (!preSlot) throw new Error("Storage pre tx not found"); // TODO: we're unforgiving here, will tweak during testing
-      const current = preSlot.value;
+export const storageDiff = (preTx: StorageSnapshot, postTx: StorageSnapshot): StorageDiff => {
+  return Object.entries(postTx).reduce((accesses, [slot, { value: post }]) => {
+    const pre = preTx[slot as Hex].value;
+    if (!pre) throw new Error("Storage pre tx not found"); // TODO: we're unforgiving here, will tweak during testing
 
-      // Only include if values are different
-      return current !== next ? { slot: slot as Hex, current, next } : null;
-    })
-    .filter((item): item is { slot: Hex; current: Hex; next: Hex } => item !== null);
+    // If values are different, it's a write (with both current and next)
+    // Otherwise, it's a read (with only current)
+    accesses[slot as Hex] = pre !== post ? { current: pre, next: post } : { current: pre };
 
-  // Convert writes array to object with slot as key
-  const writes: StorageWrites = Object.fromEntries(
-    writesArray.map(({ slot, current, next }) => [slot, { current, next }]),
-  );
-
-  // Get all slots that were read but not written to
-  const reads: StorageReads = Object.fromEntries(
-    (
-      Object.entries(postTx)
-        .filter(([slot]) => !writes[slot as Hex])
-        .map(([slot, { value }]) => [slot, { current: value }]) as Array<[Hex, { current: Hex }]>
-    ).filter(([_, { current }]) => current !== undefined),
-  );
-
-  return {
-    writes,
-    reads,
-  };
+    return accesses;
+  }, {} as StorageDiff);
 };
 
 /**
@@ -131,10 +105,7 @@ export const intrinsicSnapshot = async (
  * @returns Account field changes during transaction
  */
 export const intrinsicDiff = (preTx: IntrinsicsSnapshot, postTx: IntrinsicsSnapshot): IntrinsicsDiff => {
-  let result = {} as IntrinsicsDiff;
-
-  // Process each field in the intrinsic account state
-  for (const field of Object.keys(postTx) as Array<keyof IntrinsicsSnapshot>) {
+  return (Object.keys(postTx) as Array<keyof IntrinsicsSnapshot>).reduce((result, field) => {
     const preField = preTx[field];
     if (!preField) throw new Error(`Account field ${field} not found in pre-transaction state`);
 
@@ -142,30 +113,9 @@ export const intrinsicDiff = (preTx: IntrinsicsSnapshot, postTx: IntrinsicsSnaps
     const next = postTx[field].value;
 
     // If values are different, include the next value
-    if (current !== next) {
-      // TODO: hate using any here but now sure how to do otherwise for these nested properties
-      (result[field] as any) = { current: current, next: next };
-    } else {
-      (result[field] as any) = { current: current };
-    }
-  }
+    // TODO: hate using any here but now sure how to do otherwise for these nested properties
+    (result[field] as any) = current !== next ? { current, next } : { current };
 
-  return result;
-};
-
-/**
- * Creates a complete address state diff by combining slot and account changes.
- *
- * @param slotsDiff - Changes to address storage slots (for contracts)
- * @param accountDiff - Changes to account fields
- * @returns Complete address state diff
- */
-export const createAccountDiff = (
-  slotsDiff: Omit<AccountDiff, "intrinsic">,
-  accountDiff: IntrinsicsDiff,
-): AccountDiff => {
-  return {
-    ...slotsDiff,
-    intrinsic: accountDiff,
-  };
+    return result;
+  }, {} as IntrinsicsDiff);
 };

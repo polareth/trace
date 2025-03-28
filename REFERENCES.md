@@ -26,6 +26,7 @@
 - [ ] ? add a "details" property to the returned trace, with the raw tevm call result (gas, errors, etc)
 - [ ] ? pass a "label"/something flag to label or not storage slots (default true, but setting to false would save a lot on compute)
 - [ ] export types and utilities for decoding abi types and mention on readme? or don't bloat the package? maybe would be good as a second package provided lattice authorization
+- [ ] upstream utilities (compute mapping slot, array slot at index, etc?) to Ox
 - [ ] provide same api as viem/tevm with "as const" abi except it's with the storage layout, and you get a fully typed api with decoded types, etc
 - [ ] provide some state listeners -> listen to a contract's state changes; same api as listening to contract events, you get the typed state change
   ```typescript

@@ -1,9 +1,9 @@
 import { Address, Hex, hexToBigInt, isHex, keccak256, toHex } from "tevm";
 import { abi } from "@shazow/whatsabi";
+import { AbiType, AbiTypeToPrimitiveType } from "abitype";
 import { decodeAbiParameters, encodeAbiParameters, padHex } from "viem";
 
 import { isStorageAdapterType, StorageAdapter, StorageLayoutAdapter } from "@/lib/adapter";
-import { AbiType, AbiTypeToPrimitiveType } from "@/lib/adapter/schema";
 import { findMappingMatch } from "@/lib/slots/mapping";
 import { MappingKey, SlotLabelResult } from "@/lib/types";
 

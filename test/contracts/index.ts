@@ -2,6 +2,7 @@ export { AssemblyStorage } from "./advanced/AssemblyStorage.s.sol";
 export { StoragePacking } from "./basic/StoragePacking.s.sol";
 export { Arrays } from "./data-structures/Arrays.s.sol";
 export { Mappings } from "./data-structures/Mappings.s.sol";
+export { Structs } from "./data-structures/Structs.s.sol";
 export { DelegateBase } from "./delegate-calls/DelegateBase.s.sol";
 export { DelegateLogic } from "./delegate-calls/DelegateLogic.s.sol";
 export { ContractA } from "./interactions/ContractA.s.sol";

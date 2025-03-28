@@ -12,7 +12,6 @@ import { beforeEach, vi } from "vitest";
 
 import { ACCOUNTS, CONTRACTS } from "@test/constants";
 import { debug } from "@/debug";
-import { createStorageLayoutAdapter } from "@/lib/adapter";
 import * as storageLayout from "@/lib/storage-layout";
 
 beforeEach(async () => {
@@ -102,11 +101,11 @@ const setupContractsMock = () => {
     );
   });
 
-  vi.spyOn(storageLayout, "getStorageLayoutAdapter").mockImplementation(async ({ address, sources }) => {
+  vi.spyOn(storageLayout, "getStorageLayout").mockImplementation(async ({ address, sources }) => {
     // Return empty layout if we're missing critical information
     if (!sources || sources.length === 0) {
       debug(`Missing compiler info for ${address}. Cannot generate storage layout.`);
-      return {};
+      return undefined;
     }
 
     try {
@@ -177,16 +176,13 @@ const setupContractsMock = () => {
       );
 
       // Return a storage layout adapter for advanced access patterns
-      return createStorageLayoutAdapter(
-        {
-          storage: aggregatedStorage,
-          types: aggregatedTypes,
-        },
-        undefined,
-      ); // no need to inject a client here as we don't want to access storage
+      return {
+        storage: aggregatedStorage,
+        types: aggregatedTypes,
+      };
     } catch (error) {
       debug(`Error generating storage layout for ${address}:`, error);
-      return {};
+      return undefined;
     }
   });
 };
